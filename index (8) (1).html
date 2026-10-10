@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <style>
+        .shortInput {
+            width: 50px;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas" width="640" height="480"></canvas><br>
+    <video style="display: none;" id="video"></video>
+    <input type="file" id="fi" style="display: none;"><br>
+    <button id="openBtn">⏏</button><button id="stopBtn">⏹</button><button id="playBtn">▶</button><button
+        id="rewBtn">⏪︎</button><button id="ffBtn">⏩︎</button><button id="pauseBtn">⏸</button>
+    <pre id="statusP" style="font-family: monospace; font-size:14px">No video</pre><br>
+    <button onclick="generateMap(Number(mapWidth.value),Number(mapHeight.value),Number(mapDensity.value))">Generate random map</button> map size=<input type="number" id="mapWidth" class="shortInput" value="25">x<input type="number" id="mapHeight" class="shortInput" value="25"> density <input type="number" value="0.5" id="mapDensity" class="shortInput">
+    <p id="fpsMeter">fps: 0</p><br>
+    <script src="video.js"></script>
+    <script src="mapgen.js"></script>
+    <script>
+        //let ctx = canvas.getContext('2d');
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+
+        let videoCanvas = document.createElement('canvas');
+        let videoCtx = videoCanvas.getContext('2d');
+
+        let texturesToLoad = 0;
+        let texturesLoaded = 0;
+
+        function loadTexture(path, index) {
+            const image = new Image();
+            texturesToLoad++;
+            image.onload = () => {
+                texturesLoaded++;
+                if (!walls[index]) { walls[index] = {} }
+                if (!walls[index].texture) { walls[index].texture = image }
+                walls[index].width = image.width;
+                walls[index].height = image.height;
+                if (texturesLoaded === texturesToLoad) {
+                    startWebGLRenderer();
+                }
+            };
+            image.onerror = () => {
+                console.error(`Failed to load texture: ${path}`);
+            };
+            image.src = path;
+            return image;
+        }
+
+        loadTexture("img1.png", 1);
+        loadTexture("img2.png", 2);
+        loadTexture("img3.png", 3);
+
+        loadTexture("img4.png", 5);
+
+        let map = [
+            [0, 0, 1, 1, 0, 0, 0, 1],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 1, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 0, 1, 1, 1, 1],
+            [1, 0, 0, 0, 4, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 7, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const walls = {
+            4: { /* uses 4 for historical reasons, because there were only 3 textures before adding video */
+                texture: videoCanvas,
+                width: 1,
+                height: 1
+            }
+        };
+
+        let player = {
+            x: 3.5,
+            y: 6,
+            z: 0.5,
+            angle: -Math.PI / 2,
+            pitch: 0
+        };
+        let FOV = Math.PI / 180 * 60;
+
+        let d = new Date();
+        let fps = 0;
+
+        let fisheye = false;
+
+        const PITCH_SPEED = 0.025;
+        const MOVE_SPEED = 3.0;
+        const ROTATION_SPEED = 2.2;
+        const VERTICAL_SPEED = 3.0;
+        const WALL_HEIGHT = 1;
+        const EYE_HEIGHT = 0.5;
+        const MAX_PITCH = Math.PI * 0.48;
+        const COLLISION_RADIUS = 0.18;
+        const FLOOR_COLOR = "rgb(32, 32, 32)";
+
+        const keys = Object.create(null);
+
+        let lastFrameTime = performance.now();
+        let fpsFrames = 0;
+        let fpsTime = lastFrameTime;
+
+        // Camera focal length, in pixels.
+        const focalLength = () => (WIDTH / 2) / Math.tan(FOV / 2);
+
+        const RENDER_SCALE = 1;
+
+        const gpuTextures = new Map();
+
+
+const gl = canvas.getContext("webgl2", {
+    alpha: false,
+    antialias: false,
+    depth: true,
+    powerPreference: "high-performance"
+});
+
+if (!gl) {
+    throw new Error("WebGL 2 is not supported by this browser.");
+}
+
+let lastVideoTime = -1;
+
+const vertexShaderSource = `#version 300 es
+in vec3 aPosition;
+in vec2 aUV;
+
+uniform mat4 uMVP;
+
+out vec2 vUV;
+
+void main() {
+    gl_Position = uMVP * vec4(aPosition, 1.0);
+    vUV = aUV;
+}
+`;
+
+const fragmentShaderSource = `#version 300 es
+precision mediump float;
+
+in vec2 vUV;
+uniform sampler2D uTexture;
+uniform vec4 uColor;
+uniform int uUseTexture;
+
+out vec4 outColor;
+
+void main() {
+    if (uUseTexture == 1) {
+        outColor = texture(uTexture, vUV);
+    } else {
+        outColor = uColor;
+    }
+}
+`;
+
+function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(message);
+    }
+
+    return shader;
+}
+
+function createProgram(vsSource, fsSource) {
+    console.log("Vertex shader:", vsSource);
+    console.log("Fragment shader:", fsSource);
+
+    if (typeof vsSource !== "string" ||
+        typeof fsSource !== "string") {
+        throw new Error("Shader source is missing or undefined.");
+    }
+    const program = gl.createProgram();
+
+    gl.attachShader(
+        program,
+        compileShader(gl.VERTEX_SHADER, vsSource)
+    );
+
+    gl.attachShader(
+        program,
+        compileShader(gl.FRAGMENT_SHADER, fsSource)
+    );
+
+    gl.linkProgram(program);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program));
+    }
+
+    return program;
+}
+const skyProgram = createProgram(
+    // Vertex shader
+    `#version 300 es
+    out vec2 vUV;
+
+    void main() {
+        vec2 p = vec2(
+            float((gl_VertexID << 1) & 2),
+            float(gl_VertexID & 2)
+        );
+
+        vUV = p;
+        gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+    }`,
+
+    // Fragment shader
+    `#version 300 es
+    precision highp float;
+
+    in vec2 vUV;
+
+    uniform float uPitch;
+    uniform float uFov;
+
+    out vec4 outColor;
+
+    void main() {
+        float screenY = 1.0 - 2.0 * vUV.y;
+        float focal = 1.0 / tan(uFov * 0.5);
+
+float rayZ =
+    sin(uPitch) +
+    screenY * cos(uPitch) / focal;
+
+        if (rayZ >= 0.0) {
+            outColor = vec4(
+                56.0 / 255.0,
+                56.0 / 255.0,
+                56.0 / 255.0,
+                1.0
+            );
+        } else {
+            outColor = vec4(
+                113.0 / 255.0,
+                113.0 / 255.0,
+                113.0 / 255.0,
+                1.0
+            );
+        }
+    }`
+);
+
+const skyPitch = gl.getUniformLocation(skyProgram, "uPitch");
+const skyFov = gl.getUniformLocation(skyProgram, "uFov");
+
+
+
+
+
+const program = createProgram(
+    vertexShaderSource,
+    fragmentShaderSource
+);
+
+gl.useProgram(program);
+
+const attribPosition = gl.getAttribLocation(program, "aPosition");
+const attribUV = gl.getAttribLocation(program, "aUV");
+const uniformMVP = gl.getUniformLocation(program, "uMVP");
+const uniformTexture = gl.getUniformLocation(program, "uTexture");
+const uniformColor = gl.getUniformLocation(program, "uColor");
+const uniformUseTexture = gl.getUniformLocation(program, "uUseTexture");
+
+gl.enable(gl.DEPTH_TEST);
+gl.depthFunc(gl.LESS);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+gl.frontFace(gl.CW);
+
+gl.disable(gl.CULL_FACE);
+
+gl.clearColor(
+    113 / 255,
+    113 / 255,
+    113 / 255,
+    1
+);
+
+function multiplyMatrices(a, b) {
+    const out = new Float32Array(16);
+
+    for (let c = 0; c < 4; c++) {
+        for (let r = 0; r < 4; r++) {
+            out[c * 4 + r] =
+                a[r] * b[c * 4] +
+                a[4 + r] * b[c * 4 + 1] +
+                a[8 + r] * b[c * 4 + 2] +
+                a[12 + r] * b[c * 4 + 3];
+        }
+    }
+
+    return out;
+}
+
+function perspective(fov, aspect, near, far) {
+    const f = 1 / Math.tan(fov / 2);
+    const nf = 1 / (near - far);
+
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, 2 * far * near * nf, 0
+    ]);
+}
+
+function makeViewMatrix() {
+    const yaw = player.angle;
+    const pitch = player.pitch;
+
+    const forward = [
+        Math.cos(yaw) * Math.cos(pitch),
+        Math.sin(yaw) * Math.cos(pitch),
+        -Math.sin(pitch)
+    ];
+
+    const right = [
+        -Math.sin(yaw),
+        Math.cos(yaw),
+        0
+    ];
+
+    const up = [
+        Math.cos(yaw) * Math.sin(pitch),
+        Math.sin(yaw) * Math.sin(pitch),
+        Math.cos(pitch)
+    ];
+
+    const x = player.x;
+    const y = player.y;
+    const z = player.z;
+
+    const tx = -(right[0] * x + right[1] * y + right[2] * z);
+    const ty = -(up[0] * x + up[1] * y + up[2] * z);
+    const tz = forward[0] * x + forward[1] * y + forward[2] * z;
+
+    // Correct column-major view matrix.
+    return new Float32Array([
+        right[0], up[0], -forward[0], 0,
+        right[1], up[1], -forward[1], 0,
+        right[2], up[2], -forward[2], 0,
+        tx,       ty,    tz,           1
+    ]);
+}
+
+// Each quad has outward-facing CCW vertices.
+// UVs are adjusted per face so the texture orientation is consistent.
+function addQuad(out, p, uv) {
+    const order = [0, 1, 2, 0, 2, 3];
+
+    for (const i of order) {
+        out.push(
+            p[i][0], p[i][1], p[i][2],
+            uv[i][0], uv[i][1]
+        );
+    }
+}
+
+function createCubeMesh() {
+    const meshes = new Map();
+
+    for (let y = 0; y < map.length; y++) {
+        for (let x = 0; x < map[y].length; x++) {
+            const id = map[y][x];
+            if (!id) continue;
+
+            if (!meshes.has(id)) meshes.set(id, []);
+
+            const out = meshes.get(id);
+            const x0 = x, x1 = x + 1;
+            const y0 = y, y1 = y + 1;
+            const z0 = 0, z1 = WALL_HEIGHT;
+
+            const sideUV = [
+                [1, 0],
+                [0, 0],
+                [0, 1],
+                [1, 1]
+            ];
+                    
+            // Horizontal faces: retain the existing top-face orientation.
+            const topUV = [
+                [0, 1],
+                [1, 1],
+                [1, 0],
+                [0, 0]
+            ];
+
+            // East (+X)
+            addQuad(out, [
+                [x1,y0,z0], [x1,y1,z0],
+                [x1,y1,z1], [x1,y0,z1]
+            ], sideUV);
+
+            // West (-X)
+            addQuad(out, [
+                [x0,y1,z0], [x0,y0,z0],
+                [x0,y0,z1], [x0,y1,z1]
+            ], sideUV);
+
+            // North (-Y)
+            addQuad(out, [
+                [x0,y0,z0], [x1,y0,z0],
+                [x1,y0,z1], [x0,y0,z1]
+            ], sideUV);
+
+            // South (+Y)
+            addQuad(out, [
+                [x1,y1,z0], [x0,y1,z0],
+                [x0,y1,z1], [x1,y1,z1]
+            ], sideUV);
+
+            // Top (+Z)
+            addQuad(out, [
+                [x0,y0,z1], [x1,y0,z1],
+                [x1,y1,z1], [x0,y1,z1]
+            ], topUV);
+
+            // Bottom (-Z)
+            addQuad(out, [
+                [x0,y1,z0], [x1,y1,z0],
+                [x1,y0,z0], [x0,y0,z0]
+            ], topUV);
+        }
+    }
+
+    const result = new Map();
+
+    for (const [id, vertices] of meshes) {
+        const vao = gl.createVertexArray();
+        const buffer = gl.createBuffer();
+
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+        gl.bufferData(
+            gl.ARRAY_BUFFER,
+            new Float32Array(vertices),
+            gl.STATIC_DRAW
+        );
+
+        const stride = 5 * 4;
+
+        gl.enableVertexAttribArray(attribPosition);
+        gl.vertexAttribPointer(
+            attribPosition, 3, gl.FLOAT, false, stride, 0
+        );
+
+        gl.enableVertexAttribArray(attribUV);
+        gl.vertexAttribPointer(
+            attribUV, 2, gl.FLOAT, false, stride, 3 * 4
+        );
+
+        result.set(id, {
+            vao,
+            buffer,
+            count: vertices.length / 5
+        });
+    }
+
+    gl.bindVertexArray(null);
+    return result;
+}
+
+let cubeMeshes = createCubeMesh();
+
+function rebuildMapMeshes() {
+    // Delete the old GPU resources.
+    for (const mesh of cubeMeshes.values()) {
+        gl.deleteVertexArray(mesh.vao);
+        gl.deleteBuffer(mesh.buffer);
+    }
+
+    // Rebuild geometry using the updated map.
+    cubeMeshes = createCubeMesh();
+}
+
+console.log("Cube meshes:", cubeMeshes.size);
+console.log("Map dimensions:", map.length, map[0]?.length);
+console.log("Wall IDs:", [...cubeMeshes.keys()]);
+console.log("Player:", player);
+
+function resizeVideoTexture() {
+    const entry = gpuTextures.get(4);
+    if (!entry) return;
+
+    gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+
+    gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        videoCanvas
+    );
+
+    entry.source = videoCanvas;
+    lastVideoTime = -1;
+}
+
+// Upload an image or canvas to a GPU texture.
+function uploadTexture(source) {
+    const texture = gl.createTexture();
+
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        source
+    );
+
+    gl.texParameteri(
+        gl.TEXTURE_2D,
+        gl.TEXTURE_MIN_FILTER,
+        gl.NEAREST
+    );
+
+    gl.texParameteri(
+        gl.TEXTURE_2D,
+        gl.TEXTURE_MAG_FILTER,
+        gl.NEAREST
+    );
+
+    gl.texParameteri(
+        gl.TEXTURE_2D,
+        gl.TEXTURE_WRAP_S,
+        gl.REPEAT
+    );
+
+    gl.texParameteri(
+        gl.TEXTURE_2D,
+        gl.TEXTURE_WRAP_T,
+        gl.REPEAT
+    );
+
+    return texture;
+}
+
+function drawLetterboxedVideo() {
+    if (
+        video.readyState < 2 ||
+        !video.videoWidth ||
+        !video.videoHeight
+    ) {
+        return;
+    }
+
+    const canvasSize = videoCanvas.width;
+
+    const scale = Math.min(
+        canvasSize / video.videoWidth,
+        canvasSize / video.videoHeight
+    );
+
+    const width = video.videoWidth * scale;
+    const height = video.videoHeight * scale;
+
+    const x = (canvasSize - width) / 2;
+    const y = (canvasSize - height) / 2;
+
+    videoCtx.fillStyle = "black";
+    videoCtx.fillRect(0, 0, canvasSize, canvasSize);
+
+    videoCtx.drawImage(
+        video,
+        x, y,
+        width, height
+    );
+}
+
+function initializeTextures() {
+    for (const id in walls) {
+        const source = walls[id]?.texture;
+
+        if (
+            source &&
+            source.width > 0 &&
+            source.height > 0
+        ) {
+            gpuTextures.set(Number(id), {
+                texture: uploadTexture(source),
+                source,
+                isVideo: source === videoCanvas
+            });
+        }
+    }
+}
+
+
+
+function isSolid(x, y) {
+    const mx = Math.floor(x);
+    const my = Math.floor(y);
+
+    if (
+        my < 0 || my >= map.length ||
+        mx < 0 || mx >= map[my].length
+    ) {
+        return false;
+    }
+
+    return map[my][mx] !== 0;
+}
+
+function canMoveTo(x, y) {
+    const r = COLLISION_RADIUS;
+
+    return !(
+        isSolid(x - r, y - r) ||
+        isSolid(x + r, y - r) ||
+        isSolid(x - r, y + r) ||
+        isSolid(x + r, y + r)
+    );
+}
+
+function update(dt) {
+    const s = Math.min(dt, 0.05);
+
+    if (keys.ArrowLeft || keys.Numpad4) player.angle -= ROTATION_SPEED * s;
+    if (keys.ArrowRight || keys.Numpad6) player.angle += ROTATION_SPEED * s;
+
+    if (keys.KeyW || keys.PageUp || keys.Numpad9) player.pitch -= 1.5 * s;
+    if (keys.KeyS || keys.PageDown || keys.Numpad3) player.pitch += 1.5 * s;
+
+    player.pitch = Math.max(
+        -1.45, Math.min(1.45, player.pitch)
+    );
+
+    let forward = 0;
+    let strafe = 0;
+
+    if (keys.ArrowUp || keys.Numpad8) forward++;
+    if (keys.ArrowDown || keys.Numpad2) forward--;
+    if (keys.KeyA) strafe--;
+    if (keys.KeyD) strafe++;
+
+    const length = Math.hypot(forward, strafe) || 1;
+    forward /= length;
+    strafe /= length;
+
+    const speed = MOVE_SPEED * s;
+
+    const dx = (
+        Math.cos(player.angle) * forward -
+        Math.sin(player.angle) * strafe
+    ) * speed;
+
+    const dy = (
+        Math.sin(player.angle) * forward +
+        Math.cos(player.angle) * strafe
+    ) * speed;
+
+    if (canMoveTo(player.x + dx, player.y)) player.x += dx;
+    if (canMoveTo(player.x, player.y + dy)) player.y += dy;
+
+    if (keys.KeyQ || keys.Numpad1) player.z -= VERTICAL_SPEED * s;
+    if (keys.KeyE || keys.Numpad7) player.z += VERTICAL_SPEED * s;
+}
+
+function render() {
+    const width = canvas.width;
+    const height = canvas.height;
+
+    if (gl.canvas.width !== width || gl.canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+
+    const aspect = gl.drawingBufferWidth / gl.drawingBufferHeight;
+
+    // Draw the two-color sky.
+    gl.disable(gl.DEPTH_TEST);
+
+    gl.useProgram(skyProgram);
+
+    gl.uniform1f(skyPitch, player.pitch);
+    gl.uniform1f(skyFov, FOV);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.enable(gl.DEPTH_TEST);
+
+    // Clear depth so walls render correctly over the sky.
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+
+    const projection = perspective(
+        FOV, aspect, 0.05, 20000
+    );
+
+    const view = makeViewMatrix();
+    const mvp = multiplyMatrices(projection, view);
+
+    gl.useProgram(program);
+    gl.uniformMatrix4fv(uniformMVP, false, mvp);
+    gl.uniform1i(uniformTexture, 0);
+
+    // Solid gray floor.
+    gl.uniform1i(uniformUseTexture, 0);
+    gl.uniform4f(
+        uniformColor,
+        56 / 255, 56 / 255, 56 / 255, 1
+    );
+
+    // Upload the video only when a new frame is available.
+    const videoEntry = gpuTextures.get(4);
+
+if (
+    videoEntry?.isVideo &&
+    typeof video !== "undefined" &&
+    video.readyState >= 2 &&
+    video.currentTime !== lastVideoTime
+) {
+    drawLetterboxedVideo();
+
+    gl.bindTexture(gl.TEXTURE_2D, videoEntry.texture);
+
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+    gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0, 0, 0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        videoCanvas
+    );
+
+    lastVideoTime = video.currentTime;
+}
+
+    // Each batch shares a texture, minimizing draw calls.
+gl.uniform1i(uniformUseTexture, 1);
+gl.activeTexture(gl.TEXTURE0);
+
+for (const [id, mesh] of cubeMeshes) {
+    const entry = gpuTextures.get(id);
+
+    if (!entry) {
+        console.warn("Missing GPU texture for wall ID:", id);
+        continue;
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+    gl.bindVertexArray(mesh.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+}
+
+gl.bindVertexArray(null);
+}
+
+let fpsLastUpdate = performance.now();
+
+function gameLoop(now = performance.now()) {
+    const dt = Math.min((now - lastFrameTime) / 1000, 0.05);
+    lastFrameTime = now;
+
+    update(dt);
+    render();
+
+    // Update FPS display once per second.
+    fpsFrames++;
+
+    if (now - fpsLastUpdate >= 1000) {
+        const fps = Math.round(
+            fpsFrames * 1000 / (now - fpsLastUpdate)
+        );
+
+        if (typeof fpsMeter !== "undefined") {
+            fpsMeter.textContent = `FPS: ${fps}`;
+        }
+
+        fpsFrames = 0;
+        fpsLastUpdate = now;
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+window.addEventListener("keydown", e => {
+    if (e.key.startsWith("Arrow") || e.code === "Space") {
+        e.preventDefault();
+    }
+    keys[e.code] = true;
+});
+
+window.addEventListener("keyup", e => {
+    keys[e.code] = false;
+});
+
+window.addEventListener("blur", () => {
+    for (const key in keys) keys[key] = false;
+});
+
+// Call this only after your image textures have loaded.
+function startWebGLRenderer() {
+    initializeTextures();
+    lastFrameTime = performance.now();
+    requestAnimationFrame(gameLoop);
+}
+
+        // Keyboard input.
+        window.addEventListener("keydown", (e) => {
+            if (
+                e.key.startsWith("Arrow") ||
+                e.code === "Space"
+            ) {
+                e.preventDefault();
+            }
+
+            keys[e.code] = true;
+        });
+
+        window.addEventListener("keyup", (e) => {
+            keys[e.code] = false;
+        });
+
+        window.addEventListener("blur", () => {
+            for (const key in keys) {
+                keys[key] = false;
+            }
+        });
+
+    </script>
+</body>
+
+</html>
