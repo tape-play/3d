@@ -1,6 +1,6 @@
 # 3D
 
-Wolfenstein 3d-like renderer. Uses webgl for rendering. Created using chatgpt (I don't know how to work with webgl)
+Wolfenstein 3d-like renderer. Uses webgl for rendering. Created using chatgpt (I don't know how to work with webgl, so decided to try ai to write the webgl code)
 
 # Functionality:
 - Map generator
