@@ -9,6 +9,14 @@
         .shortInput {
             width: 50px;
         }
+        #controlsDiv {
+            display: none;
+            position: absolute;
+            touch-action: none;
+        }
+        #controlsDiv.visible {
+            display:block;
+        }
     </style>
 </head>
 
@@ -19,7 +27,13 @@
     <button id="openBtn">⏏</button><button id="stopBtn">⏹</button><button id="playBtn">▶</button><button
         id="rewBtn">⏪︎</button><button id="ffBtn">⏩︎</button><button id="pauseBtn">⏸</button>
     <pre id="statusP" style="font-family: monospace; font-size:14px">No video</pre><br>
-    <button onclick="generateMap(Number(mapWidth.value),Number(mapHeight.value),Number(mapDensity.value))">Generate random map</button> map size=<input type="number" id="mapWidth" class="shortInput" value="25">x<input type="number" id="mapHeight" class="shortInput" value="25"> density <input type="number" value="0.5" id="mapDensity" class="shortInput">
+    <button onclick="generateMap(Number(mapWidth.value),Number(mapHeight.value),Number(mapDensity.value))">Generate random map</button> map size=<input type="number" id="mapWidth" class="shortInput" value="25">x<input type="number" id="mapHeight" class="shortInput" value="25"> density <input type="number" value="0.5" id="mapDensity" class="shortInput"><br>
+    <button onclick="controlsDiv.classList.toggle('visible')">Show/hide controls</button>
+    <br>
+    <div id="controlsDiv">
+        <button onpointerdown="keys['KeyA'] = true" onpointerup="keys['KeyA'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">Strafe ←</button><button onpointerdown="keys['ArrowUp'] = true" onpointerup="keys['ArrowUp'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">↑</button><button onpointerdown="keys['KeyD'] = true" onpointerup="keys['KeyD'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">Strafe →</button><button onpointerdown="keys['KeyE'] = true" onpointerup="keys['KeyE'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">Move ↑</button><button onpointerdown="keys['KeyW'] = true" onpointerup="keys['KeyW'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">Rotate ↑</button><br>
+        <button onpointerdown="keys['ArrowLeft'] = true" onpointerup="keys['ArrowLeft'] = false" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">←</button><button onpointerdown="keys['ArrowDown'] = true;" onpointerup="keys['ArrowDown'] = false;" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">↓</button><button onpointerdown="keys['ArrowRight'] = true;" oncontextmenu="return false" onpointerup="keys['ArrowRight'] = false;" style="width:64px;height:64px;touch-action: none;user-select:none;">→</button><button onpointerdown="keys['KeyQ'] = true;" onpointerup="keys['KeyQ'] = false;" oncontextmenu="return false" style="width:64px;height:64px;touch-action: none;user-select:none;">Move ↓</button><button onpointerdown="keys['KeyS'] = true;" oncontextmenu="return false" onpointerup="keys['KeyS'] = false;" style="width:64px;height:64px;touch-action: none;user-select:none;">Rotate ↓</button>
+    </div>
     <p id="fpsMeter">fps: 0</p><br>
     <script src="video.js"></script>
     <script src="mapgen.js"></script>
@@ -849,7 +863,20 @@ function startWebGLRenderer() {
                 keys[key] = false;
             }
         });
-
+            controlsDiv.onpointerdown = (e) => {
+                let winRect = controlsDiv.getBoundingClientRect();
+                let handlePointerMove = (e1) => {
+                    //console.log(e);
+                    controlsDiv.style.left = e1.pageX - (e.clientX - winRect.left)+'px';
+                    controlsDiv.style.top =  e1.pageY - (e.clientY - winRect.top)+'px';
+                };
+                let handlePointerUp = () => {
+                    document.documentElement.removeEventListener('pointermove', handlePointerMove);
+                    document.documentElement.removeEventListener('pointerup', handlePointerUp);
+                };
+                document.documentElement.addEventListener('pointerup', handlePointerUp);
+                document.documentElement.addEventListener('pointermove', handlePointerMove);
+             }
     </script>
 </body>
 
